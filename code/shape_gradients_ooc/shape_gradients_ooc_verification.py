@@ -1,18 +1,14 @@
 """
-This script is devoted to verifying the estimates for the shape gradients of section 3.2.
-It serves to generate the experiments of section 4.2.2.
+This script is to numerically verify the estimate of Theorem 5.1.
+It serves to generate the experiments of Section 6.
 
-We test the shape gradients with coarse and fine vector fields, and refine the spatio/temporal discretization
-The OOC is computed as seen in section 4.2.2. It is expected to asymptotically approach 2 (because of the chosen
-coupling between spatial and temporal discretization parameters).
+The order of convergence (OOC) is expected to asymptotically approach 2,
+since we couple space and time discretization like dt = h^2.
 
-Note: the run for the implicit euler method is very computationally expensive, consider downscaling the experiment
-
-Head to configuration.py to set up the experiment (or leave as is to reproduce the results from the article).
-This script depends also on code/tools/ooc_verification.py
+Head to ./configuration.py to set up the data needed for this script
+(in configuration.py, instructions are provided to reproduce Table 1).
 
 Then, run the script normally through e.g. the command line.
-
 """
 
 # %% Imports
@@ -21,12 +17,17 @@ from dolfin import *
 import logging
 import numpy as np
 from tqdm import tqdm
+import os
+import sys
 
-from utilities.overloads import radial_displacement, backend_radial_displacement
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+from utilities.radial_transfer import backend_radial_displacement
 from utilities.shape_optimization import ShapeOptimizationProblem
 from utilities.ooc_verification import get_spiky_radial_function, get_assembled_shape_gradient, W1i_norm, \
     string_to_vector_field
-from applications.shape_gradients_ooc.configuration import _f, _g
+from shape_gradients_ooc.configuration import _f, _g
+
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 # %% Setting log and global parameters
 
@@ -34,7 +35,7 @@ parameters['allow_extrapolation'] = True  # I want a function to be taken from a
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)-8s %(message)s', datefmt='%H:%M')
 set_log_level(LogLevel.ERROR)
 runs_path = "./"  # path to the directory containing this .py file, try to change to absolute path in case of problems
-mesh_path = "./mesh_data"
+mesh_path = "../../../mesh_data"
 from pathlib import Path
 Path(mesh_path).mkdir(parents=True, exist_ok=True)
 
@@ -44,7 +45,6 @@ Path(mesh_path).mkdir(parents=True, exist_ok=True)
 
 try:
     import importlib.util
-    import sys
 
     spec = importlib.util.spec_from_file_location("configuration", runs_path + "configuration.py")
     pd = importlib.util.module_from_spec(spec)
@@ -56,7 +56,6 @@ try:
     cost_functional_dict = pd.cost_functional_dict
     experiment_dict = pd.experiment_dict
     smooth_displacements_dict = pd.smooth_displacements_dict
-    manual = pd.manual
     h_tentative = pd.h_tentative
 except:
     raise Exception("Couldn't load configuration file from path")
@@ -65,14 +64,10 @@ except:
 f = _f(t=0)
 g = _g(t=0)
 
-if not manual:
-    from dolfin_adjoint import *
-
 if pde_dict["ode_scheme"] == "crank_nicolson":
     dt_power = 1
 else:
     dt_power = 2
-    experiment_dict["N_it"] = 5  # downscaling implicit euler's experiment
 
 dt_multiplier = experiment_dict["dt_multiplier"]
 
@@ -109,45 +104,40 @@ for h, k in zip(h_tentative, range(len(h_tentative))):
     dt_actual = np.append(dt_actual, pde_dict["T"] / pde_dict["N_steps"])
 
     dj = get_assembled_shape_gradient(V_sph, V_def, V_vol, M2, problem.exact_domain, pde_dict,
-                                      cost_functional_dict, f, g, manual=manual)
+                                      cost_functional_dict, f, g)
     evaluations = {"dj": [], "norms": []}
 
     logging.info("Evaluating the gradient")
+
+    # First, test dj with non-smooth fields.
     with tqdm(total=len(amp) * len(spikes)) as pbar:
         for A in amp:
             for s in spikes:
                 dq = get_spiky_radial_function(problem, V_sph, A, s)
 
-                if not manual:
-                    W = radial_displacement(dq, M2, V_def)
-                    dj_dq = dq._ad_dot(dj)
-                else:
-                    W = backend_radial_displacement(dq, M2, V_def)
-                    dj_dq = np.dot(dj[:], W.vector()[:])
+                W = backend_radial_displacement(dq, M2, V_def)
+                dj_dq = np.dot(dj[:], W.vector()[:])
 
                 evaluations["dj"].append(dj_dq)
                 evaluations["norms"].append(W1i_norm(W, Q, problem, V_vol))
 
                 pbar.update(1)
-    if manual:
-        for i in tqdm(range(len(smooth_displacements_dict["x"]))):
-            W = string_to_vector_field(smooth_displacements_dict["x"][i], smooth_displacements_dict["y"][i], problem)
 
-            dj_dq = np.dot(dj[:], W.vector()[:])
+    # Then, test dj by smooth displacement fields.
+    for i in tqdm(range(len(smooth_displacements_dict["x"]))):
+        W = string_to_vector_field(smooth_displacements_dict["x"][i], smooth_displacements_dict["y"][i], problem)
 
-            evaluations["dj"].append(dj_dq)
-            evaluations["norms"].append(W1i_norm(W, Q, problem, V_vol))
+        dj_dq = np.dot(dj[:], W.vector()[:])
 
-            pbar.update(1)
+        evaluations["dj"].append(dj_dq)
+        evaluations["norms"].append(W1i_norm(W, Q, problem, V_vol))
+
+        pbar.update(1)
 
     evaluations["dj"] = np.array(evaluations["dj"])
     evaluations["norms"] = np.array(evaluations["norms"])
 
     results.append(evaluations)
-
-    if not manual:
-        tape = get_working_tape()
-        tape.clear_tape()
 
 # %% Post-processing
 
@@ -161,7 +151,7 @@ for e in results:
 
 dj = np.array(dj)
 norms = np.array(norms)
-dual_errors = np.max(np.abs(dj - dj[-1, :]) / norms, axis=1)
+dual_errors = np.max(np.abs(dj - dj[-1, :]) / norms[-1], axis=1)
 ooc = np.log(dual_errors[1:] / dual_errors[:-1]) / np.log(h_actual[1:] / h_actual[:-1])
 
 logging.info(f"OOCs are {ooc}")
@@ -177,3 +167,9 @@ results_dict = {
     "dual_errors": dual_errors,
     "ooc": ooc
 }
+
+import pickle
+from datetime import datetime
+filename = f"results/data_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pkl"
+with open(filename, "wb") as file:
+    pickle.dump(results_dict, file)

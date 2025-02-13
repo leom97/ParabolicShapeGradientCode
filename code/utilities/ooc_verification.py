@@ -1,5 +1,5 @@
 """
-Helper file for code/applications/shape_gradients_ooc/shape_gradients_ooc_verification.py
+Helper file for code/applications/shape_gradients_ooc/shape_gradients_ooc_verification.py   # TODO: redo the tree structure
 """
 
 # %% Imports
@@ -9,7 +9,7 @@ import logging
 import numpy as np
 
 from utilities.meshing import sea_urchin
-from utilities.overloads import radial_displacement, backend_radial_displacement
+from utilities.radial_transfer import backend_radial_displacement
 from utilities.pdes import HeatEquation, TimeExpressionFromList
 
 # %% Setting log and global parameters
@@ -21,42 +21,21 @@ set_log_level(LogLevel.ERROR)
 
 # %% Functions
 
-def get_spiky_radial_function(problem, V_sph, A, s):
+def get_assembled_shape_gradient(V_sph, V_def, V_vol, M2, exact_domain, exact_pde_dict, cost_functional_dict, f, g):
+
     """
-    From an amplitute A and a number of spikes, it returns the spherical function sigma, as seen in section 4.2.2.
-    In particular, sigma(t) = A cos(st)
+    This function sets up the cost functional j and computes its shape gradient dj.
+    V_sph is the linear FEM space on the unit sphere,
+    and V_def is the linear space of deformation fields in the plane.
+    We parametrize deformations by radial functions, that is, we map functions on the unit sphere
+    to deformation fields via a star-shaped parametrization.
 
-    :param V_sph: linear FEM space on the unit sphere
-    :param A: amplitude
-    :param s: number of spikes
-    """
-
-    sigma = Function(V_sph)
-    circle_coords = problem.exact_sphere.mesh.coordinates()[dof_to_vertex_map(V_sph), :]
-    sigma.vector()[:] = sea_urchin(circle_coords, shift=0, amplitude=A, omega=s)
-
-    return sigma
-
-
-def get_assembled_shape_gradient(V_sph, V_def, V_vol, M2, exact_domain, exact_pde_dict, cost_functional_dict, f, g,
-                                 manual=False):
-    """
-    This function sets up the cost functional of section 3.1, computes its shape gradient. It is parametrized on
-    spherical functions living on V_sph if manual is False, on vector fields in V_def otherwise.
-
-    If manual is False, the shape gradient is computed automatically by dolfin-adjoint, otherwise the implementation is
-    manual.
-
-    :return: vector representing the testing of the shape gradient with every basis test function (of either V_sph or
-    V_def)
+    :return: vector representing the testing of the shape gradient for every basis test function of V_def.
     """
 
     # Register the control
     q = Function(V_sph)
-    if not manual:
-        W = radial_displacement(q, M2, V_def)
-    else:
-        W = backend_radial_displacement(q, M2, V_def)
+    W = backend_radial_displacement(q, M2, V_def)   # convert a function on the unit sphere to a deformation field
     ALE.move(exact_domain.mesh, W)
 
     # Generic set-up for state equations
@@ -90,10 +69,9 @@ def get_assembled_shape_gradient(V_sph, V_def, V_vol, M2, exact_domain, exact_pd
     w_equation.set_PDE_data(u0, marker_dirichlet=[3], marker_neumann=[2], dirichlet_BC=[u_D_inner], neumann_BC=[g])
 
     # The cost functional
-    v_equation.solve()
-    w_equation.solve()
+    v_equation.solve(log_message="Solve state equation for v")
+    w_equation.solve(log_message="Solve state equation for w")
 
-    J = 0
     final_smoothing = eval(cost_functional_dict["final_smoothing_lambda"])
 
     dx = Measure("dx", domain=exact_domain.mesh)
@@ -109,139 +87,125 @@ def get_assembled_shape_gradient(V_sph, V_def, V_vol, M2, exact_domain, exact_pd
              v_equation.times[1:],
              range(len(v_equation.dts)))
 
-    if manual == False:  # in this case, let us dolfin-adjoint compute the shape gradient for us
-        # Building cost functional
-        fs = 1.0  # final_smoothing
-        for (v, w, dt, t, i) in it:
-            fs = final_smoothing(exact_pde_dict["T"] - t)
-            if fs > DOLFIN_EPS:
-                if cost_functional_dict["discretization"] == "trapezoidal" and i == len(
-                        v_equation.dts) - 1:
-                    J += assemble(.25 * dt * fs * (v - w) ** 2 * dx)
-                else:
-                    J += assemble(.5 * dt * fs * (v - w) ** 2 * dx)
+    # the right hand sides for the adjoint equations
+    source_p_list = []
+    source_q_list = []
 
-        j = ReducedFunctional(J, Control(q))
-        return j.derivative()
-    else:  # let's do it ourselves
+    for (v, w, t) in zip(v_equation.solution_list, w_equation.solution_list, v_equation.times):
+        fs = final_smoothing(exact_pde_dict["T"] - t)
 
-        # the right hand sides for the adjoint equations
-        source_p_list = []
-        source_q_list = []
+        d = Function(v.function_space())
+        md = Function(v.function_space())
 
-        for (v, w, t) in zip(v_equation.solution_list, w_equation.solution_list, v_equation.times):
-            fs = final_smoothing(exact_pde_dict["T"] - t)
+        d.vector()[:] = fs * (v.vector()[:] - w.vector()[:])
+        md.vector()[:] = fs * (-v.vector()[:] + w.vector()[:])
 
-            d = Function(v.function_space())
-            md = Function(v.function_space())
+        source_p_list.append(md)  # note, this same logic should be good for the current CN implementation too:
+        source_q_list.append(d)
 
-            d.vector()[:] = fs * (v.vector()[:] - w.vector()[:])
-            md.vector()[:] = fs * (-v.vector()[:] + w.vector()[:])
+    source_p = TimeExpressionFromList(0.0, v_equation.times, source_p_list, reverse=True)
+    source_q = TimeExpressionFromList(0.0, v_equation.times, source_q_list, reverse=True)
 
-            source_p_list.append(md)  # note, this same logic should be good for the current CN implementation too:
-            source_q_list.append(d)
+    adjoint_scheme = "implicit_explicit_euler"
+    if exact_pde_dict["ode_scheme"] == "crank_nicolson":
+        adjoint_scheme = "crank_nicolson"
 
-        source_p = TimeExpressionFromList(0.0, v_equation.times, source_p_list, reverse=True)
-        source_q = TimeExpressionFromList(0.0, v_equation.times, source_q_list, reverse=True)
+    # Adjoint to Dirichlet state
+    p_equation = HeatEquation(efficient=False)
+    p_equation.interpolate_data = True
+    p_equation.set_mesh(exact_domain.mesh, exact_domain.facet_function, V_vol, order=1)
+    p_equation.set_PDE_data(Constant(0.0), marker_dirichlet=[2, 3], source=source_p,
+                            dirichlet_BC=[Constant(0.0),
+                                            Constant(0.0)])
+    p_equation.set_ODE_scheme(adjoint_scheme)
+    p_equation.verbose = True
+    p_equation.set_time_discretization(exact_pde_dict["T"],
+                                        N_steps=int(exact_pde_dict["N_steps"]),
+                                        relevant_mesh_size=exact_domain.mesh.hmax())
 
-        adjoint_scheme = "implicit_explicit_euler"
-        if exact_pde_dict["ode_scheme"] == "crank_nicolson":
-            adjoint_scheme = "crank_nicolson"
+    # Adjoint to Dirichlet-Neumann state
+    q_equation = HeatEquation(efficient=False)
+    q_equation.interpolate_data = True
+    q_equation.set_mesh(exact_domain.mesh, exact_domain.facet_function, V_vol, order=1)
+    q_equation.set_PDE_data(Constant(0.0), marker_dirichlet=[3], marker_neumann=[2],
+                            source=source_q,
+                            dirichlet_BC=[Constant(0.0)],
+                            neumann_BC=[Constant(0.0)])
+    q_equation.set_ODE_scheme(adjoint_scheme)
+    q_equation.verbose = True
+    q_equation.set_time_discretization(exact_pde_dict["T"],
+                                        N_steps=int(exact_pde_dict["N_steps"]),
+                                        relevant_mesh_size=exact_domain.mesh.hmax())
 
-        # Adjoint to Dirichlet state
-        p_equation = HeatEquation(efficient=False)
-        p_equation.interpolate_data = True
-        p_equation.set_mesh(exact_domain.mesh, exact_domain.facet_function, V_vol, order=1)
-        p_equation.set_PDE_data(Constant(0.0), marker_dirichlet=[2, 3], source=source_p,
-                                dirichlet_BC=[Constant(0.0),
-                                              Constant(0.0)])
-        p_equation.set_ODE_scheme(adjoint_scheme)
-        p_equation.verbose = True
-        p_equation.set_time_discretization(exact_pde_dict["T"],
-                                           N_steps=int(exact_pde_dict["N_steps"]),
-                                           relevant_mesh_size=exact_domain.mesh.hmax())
+    p_equation.solve(log_message="Solve adjoint equation for p")
+    q_equation.solve(log_message="Solve adjoint equation for q")
 
-        # Adjoint to Dirichlet-Neumann state
-        q_equation = HeatEquation(efficient=False)
-        q_equation.interpolate_data = True
-        q_equation.set_mesh(exact_domain.mesh, exact_domain.facet_function, V_vol, order=1)
-        q_equation.set_PDE_data(Constant(0.0), marker_dirichlet=[3], marker_neumann=[2],
-                                source=source_q,
-                                dirichlet_BC=[Constant(0.0)],
-                                neumann_BC=[Constant(0.0)])
-        q_equation.set_ODE_scheme(adjoint_scheme)
-        q_equation.verbose = True
-        q_equation.set_time_discretization(exact_pde_dict["T"],
-                                           N_steps=int(exact_pde_dict["N_steps"]),
-                                           relevant_mesh_size=exact_domain.mesh.hmax())
+    # flip their times, as the adjoint equation will be simulated in reverse time
+    p_equation.solution_list.reverse()
+    q_equation.solution_list.reverse()
 
-        p_equation.solve()
-        q_equation.solve()
+    # create shape gradient
+    dt = Constant(q_equation.dts[0])
+    Xi = TestFunction(V_def)
+    I = Identity(exact_domain.mesh.ufl_cell().geometric_dimension())
+    A = div(Xi) * I - grad(Xi) - grad(Xi).T
 
-        # flip their times, as the adjoint equation will be simulated in reverse time
-        p_equation.solution_list.reverse()
-        q_equation.solution_list.reverse()
+    # result initialization
+    dj = 0
 
-        # create shape gradient
-        dt = Constant(q_equation.dts[0])
-        h = TestFunction(V_def)
-        I = Identity(exact_domain.mesh.ufl_cell().geometric_dimension())
-        A = div(h) * I - grad(h) - grad(h).T
+    n_recursion = 50    # needed to avoid hitting recursion limits
 
-        # result initialization
-        dj_mine = 0  # dj manual
-
-        # part due to cost functional
-        cost_part = div(h) * Constant(0.0) * dx(exact_domain.mesh)  # the div term is not to have arity mismatches
-        fs = 1.0  # final_smoothing
-        for (v, w, dt, t, i) in it:
-            fs = final_smoothing(exact_pde_dict["T"] - t)
-            if fs > DOLFIN_EPS:
-                if cost_functional_dict["discretization"] == "trapezoidal" and i == len(
-                        v_equation.dts) - 1:
-                    cost_part += Constant(.25) * dt * div(h) * fs * (v - w) ** 2 * dx
-                else:
-                    cost_part += Constant(1 / 2) * dt * div(h) * fs * (v - w) ** 2 * dx
-
-                if i % 600 == 599:  # to make sure I don't hit recursion limits
-                    dj_mine += assemble(cost_part)  # add contribution up to now
-                    cost_part = div(h) * Constant(0.0) * dx(exact_domain.mesh)  # reset temporary contribution
-
-        # part due to p, v
-        pv_part = div(h) * Constant(0.0) * dx(exact_domain.mesh)
-        for (vj, vjm, pj, pjm, i) in zip(v_equation.solution_list[1:], v_equation.solution_list[:-1],
-                                         p_equation.solution_list[1:], p_equation.solution_list[:-1],
-                                         range(len(p_equation.solution_list[:-1]))):
-            if adjoint_scheme == "implicit_explicit_euler":
-                P = pjm
-                V = vj
+    # part due to cost functional
+    cost_part = div(Xi) * Constant(0.0) * dx(exact_domain.mesh)  # the div term is not to have arity mismatches
+    fs = 1.0  # final_smoothing
+    for (v, w, dt, t, i) in it:
+        fs = final_smoothing(exact_pde_dict["T"] - t)
+        if fs > DOLFIN_EPS:
+            if cost_functional_dict["discretization"] == "trapezoidal" and i == len(
+                    v_equation.dts) - 1:
+                cost_part += Constant(.25) * dt * div(Xi) * fs * (v - w) ** 2 * dx
             else:
-                P = (pjm + pj) / 2
-                V = (vjm + vj) / 2
-            pv_part += ((vj - vjm) / dt * P * div(h) + inner(A * grad(V), grad(P))) * dt * dx(exact_domain.mesh)
-            if i % 600 == 599:
-                dj_mine += assemble(pv_part)
-                pv_part = div(h) * Constant(0.0) * dx(exact_domain.mesh)
+                cost_part += Constant(1 / 2) * dt * div(Xi) * fs * (v - w) ** 2 * dx
 
-        # part due to q, w
-        qw_part = div(h) * Constant(0.0) * dx(exact_domain.mesh)
-        for (wj, wjm, qj, qjm, i) in zip(w_equation.solution_list[1:], w_equation.solution_list[:-1],
-                                         q_equation.solution_list[1:], q_equation.solution_list[:-1],
-                                         range(len(p_equation.solution_list[:-1]))):
+            if i % 200 == 199:  # to make sure I don't hit recursion limits
+                dj += assemble(cost_part)  # add contribution up to now
+                cost_part = div(Xi) * Constant(0.0) * dx(exact_domain.mesh)  # reset temporary contribution
 
-            if adjoint_scheme == "implicit_explicit_euler":
-                Qa = qjm
-                Wa = wj
-            else:
-                Qa = (qjm + qj) / 2
-                Wa = (wjm + wj) / 2
-            qw_part += ((wj - wjm) / dt * Qa * div(h) + inner(A * grad(Wa), grad(Qa))) * dt * dx(exact_domain.mesh)
-            if i % 600 == 599:
-                dj_mine += assemble(qw_part)
-                qw_part = div(h) * Constant(0.0) * dx(exact_domain.mesh)
+    # part due to p, v
+    pv_part = div(Xi) * Constant(0.0) * dx(exact_domain.mesh)
+    for (vj, vjm, pj, pjm, i) in zip(v_equation.solution_list[1:], v_equation.solution_list[:-1],
+                                        p_equation.solution_list[1:], p_equation.solution_list[:-1],
+                                        range(len(p_equation.solution_list[:-1]))):
+        if adjoint_scheme == "implicit_explicit_euler":
+            P = pjm
+            V = vj
+        else:
+            P = (pjm + pj) / 2
+            V = (vjm + vj) / 2
+        pv_part += ((vj - vjm) / dt * P * div(Xi) + inner(A * grad(V), grad(P))) * dt * dx(exact_domain.mesh)
+        if i % 200 == 199:
+            dj += assemble(pv_part)
+            pv_part = div(Xi) * Constant(0.0) * dx(exact_domain.mesh)
 
-        dj_mine += assemble(cost_part + pv_part + qw_part)
-        return dj_mine
+    # part due to q, w
+    qw_part = div(Xi) * Constant(0.0) * dx(exact_domain.mesh)
+    for (wj, wjm, qj, qjm, i) in zip(w_equation.solution_list[1:], w_equation.solution_list[:-1],
+                                        q_equation.solution_list[1:], q_equation.solution_list[:-1],
+                                        range(len(p_equation.solution_list[:-1]))):
+
+        if adjoint_scheme == "implicit_explicit_euler":
+            Qa = qjm
+            Wa = wj
+        else:
+            Qa = (qjm + qj) / 2
+            Wa = (wjm + wj) / 2
+        qw_part += ((wj - wjm) / dt * Qa * div(Xi) + inner(A * grad(Wa), grad(Qa))) * dt * dx(exact_domain.mesh)
+        if i % 200 == 199:
+            dj += assemble(qw_part)
+            qw_part = div(Xi) * Constant(0.0) * dx(exact_domain.mesh)
+
+    dj += assemble(cost_part + pv_part + qw_part)
+    return dj
 
 
 def W1i_norm(W, Q, problem, V_vol):
@@ -272,10 +236,8 @@ def W1i_norm(W, Q, problem, V_vol):
 
 def string_to_vector_field(Vx, Vy, problem):
     """
-    Takes two strings, Vx, Vy, signifying the components of a vector field V
+    Takes two strings, Vx, Vy, components of a vector field V
 
-    :param Vx: string of the x component
-    :param Vy:
     :return the vector field whose components are given by Vx, Vy
     """
 
@@ -288,3 +250,21 @@ def string_to_vector_field(Vx, Vy, problem):
         W.append(eval(s))
 
     return project(as_vector(W))
+
+
+def get_spiky_radial_function(problem, V_sph, A, s):
+    """
+    From an amplitute A and a number of spikes s, this function returns the "spherical function" sigma(t) = A cos(st),
+    where t parametrizes the unit circle.
+    This function is used to generate deformation vector fields for evaluating the shape gradient dj.
+
+    :param V_sph: linear FEM space on the unit sphere
+    :param A: amplitude
+    :param s: number of spikes
+    """
+
+    sigma = Function(V_sph)
+    circle_coords = problem.exact_sphere.mesh.coordinates()[dof_to_vertex_map(V_sph), :]
+    sigma.vector()[:] = sea_urchin(circle_coords, shift=0, amplitude=A, omega=s)
+
+    return sigma

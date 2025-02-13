@@ -11,9 +11,8 @@ import abc
 import numpy as np
 
 from dolfin import *
-from dolfin_adjoint import *
 
-from utilities.overloads import radial_function_to_square
+from utilities.radial_transfer import radial_function_to_square
 
 
 # %% Class definition
@@ -106,7 +105,6 @@ class AnnulusMesh(AbstractMesh):
 
     from utilities.meshing import AnnulusMesh
     from dolfin import *
-    from dolfin_adjoint import *
     import matplotlib.pyplot as plt
 
     annulus = AnnulusMesh(resolution=.089)
@@ -220,12 +218,11 @@ class SquareAnnulusMesh(AbstractMesh):
             raise ValueError("The center must be a numpy array")
         if len(center) != 2:
             raise Exception("The center is not a 2-dimensional point")
-        if 0 >= inner_radius or inner_radius >= side_length / 2:
-            raise Exception("The radius/side length values are not valid")
+        # if 0 >= inner_radius or inner_radius >= side_length / 2:
+        #     raise Exception("The radius/side length values are not valid")
 
     def create_mesh(self):
         L = self.side_length
-        H = self.side_length
         c = [self.center[0], self.center[1], 0]
         r = self.inner_radius
 
@@ -248,8 +245,8 @@ class SquareAnnulusMesh(AbstractMesh):
         model.synchronize()
 
         model.add_physical([plane_surface], "volume")
-        model.add_physical(square.curve_loop.curves, "outer_boundary")
-        model.add_physical(hole.curve_loop.curves, "inner_ring")
+        model.add_physical(square.curve_loop.curves, "inner_ring")
+        model.add_physical(hole.curve_loop.curves, "outer_boundary")
 
         # Generate the mesh
         # Generate mesh
@@ -294,186 +291,12 @@ class SquareAnnulusMesh(AbstractMesh):
             raise Exception("The query point must be a numpy array")
         return radial_function_to_square(x, self.side_length)
 
-
-class SmoothedSquareAnnulusMesh(AbstractMesh):
-
-    def __init__(self, resolution=.0125,
-                 path="/home/leonardo_mutti/PycharmProjects/masters_thesis/meshes/square_annulus/", inner_radius=1,
-                 side_length=4, smoothing_radius=.25, xdmf_path=None, int_refinement=1, ext_refinement=1):
-
-        self.side_length = side_length
-        self.smoothing_radius = smoothing_radius  # it is the radius of each circle making up the smoothed corners
-        center = np.array([0, 0])
-
-        self.int_refinement = int_refinement
-        self.ext_refinement = ext_refinement
-
-        super().__init__(resolution, path, 2, center, inner_radius, xdmf_path)
-
-        if not isinstance(center, np.ndarray):
-            raise ValueError("The center must be a numpy array")
-        if len(center) != 2:
-            raise Exception("The center is not a 2-dimensional point")
-        if 0 >= inner_radius or inner_radius >= side_length / 2:
-            raise Exception("The radius/side length values are not valid")
-
-    def create_mesh(self):
-        L = self.side_length
-        H = self.side_length
-        c = [self.center[0], self.center[1], 0]
-        r = self.inner_radius
-        R = self.smoothing_radius
-
-        resolution = self.resolution
-
-        # Create a model to add data to
-        model = self.geometry.__enter__()
-
-        # The smoothed corners (start, center, end)
-
-        self.arc_points = [
-            (c[0] - L / 2, c[1] - H / 2 + R, 0),  # bottom-left
-            (c[0] - L / 2 + R, c[1] - H / 2 + R, 0),
-            (c[0] - L / 2 + R, c[1] - H / 2, 0),
-            (c[0] + L / 2 - R, c[1] - H / 2, 0),  # bottom-right
-            (c[0] + L / 2 - R, c[1] - H / 2 + R, 0),
-            (c[0] + L / 2, c[1] - H / 2 + R, 0),
-            (c[0] + L / 2, c[1] + H / 2 - R, 0),  # top-right
-            (c[0] + L / 2 - R, c[1] + H / 2 - R, 0),
-            (c[0] + L / 2 - R, c[1] + H / 2, 0),
-            (c[0] - L / 2 + R, c[1] + H / 2, 0),  # top-left
-            (c[0] - L / 2 + R, c[1] + H / 2 - R, 0),
-            (c[0] - L / 2, c[1] + H / 2 - R, 0)
-        ]
-
-        points_corners = [
-            model.add_point(pair, mesh_size=self.ext_refinement * resolution) for pair in self.arc_points
-        ]
-
-        self.limit_angles = [self.angle_from_point(np.array(list(pair))[0:2]) for pair in self.arc_points]
-
-        # Add lines between all points creating the rectangle
-        channel_lines = [[model.add_line(points_corners[3 * i - 1], points_corners[3 * i]),
-                          model.add_circle_arc(points_corners[3 * i], points_corners[3 * i + 1],
-                                               points_corners[3 * i + 2])]
-                         for i in [0, 1, 2, 3]]
-
-        channel_lines = [item for sublist in channel_lines for item in sublist]
-
-        channel_loop = model.add_curve_loop(channel_lines)
-
-        # A hole
-        hole = model.add_circle(c, r, mesh_size=self.int_refinement * resolution)
-
-        # My surface
-        plane_surface = model.add_plane_surface(channel_loop, [hole.curve_loop])
-
-        # Sinchronize, before adding physical entities
-        model.synchronize()
-
-        model.add_physical([plane_surface], "volume")
-        model.add_physical(channel_lines, "outer_boundary")
-        model.add_physical(hole.curve_loop.curves, "inner_ring")
-
-        # Generate the mesh
-        # Generate mesh
-        self.geometry.generate_mesh(dim=2)
-
-    def generate_mesh_xdmf(self):
-        resolution = self.resolution
-        path = self.path
-
-        self.create_mesh()
-        self.save_to_msh()
-        mesh_from_file = self.load_from_msh()
-
-        # Using the above function, create line and "plane" mesh
-        line_mesh = self.mesh_to_meshio(mesh_from_file, "line", prune_z=True)
-        meshio.write(path + "facet_mesh_" + str(resolution) + ".xdmf", line_mesh)
-        triangle_mesh = self.mesh_to_meshio(mesh_from_file, "triangle", prune_z=True)
-        meshio.write(path + "mesh_" + str(resolution) + ".xdmf", triangle_mesh)
-
-    def xdmf_to_dolfin(self):
-        mesh_path = self.path
-        resolution = self.resolution
-
-        # The volumetric mesh
-        mesh = Mesh()
-        with XDMFFile(mesh_path + "mesh_" + str(resolution) + ".xdmf") as infile:
-            infile.read(mesh)
-
-        # The boundary meshes
-        mvc = MeshValueCollection("size_t", mesh, 1)  # 1 means: we consider lines, 1D things
-        with XDMFFile(mesh_path + "facet_mesh_" + str(resolution) + ".xdmf") as infile:
-            infile.read(mvc, "name_to_read")
-        mf = MeshFunction("size_t", mesh, mvc)  # remember, tag 3 is inner ring, tag 2 outer ring
-
-        self.mesh = mesh
-        self.facet_function = mf
-
-        return mesh, mf
-
-    def angle_from_point(self, x):
-        return np.remainder(np.arctan2(x[..., 1], x[..., 0]), 2 * np.pi)
-
-    def rotate(self, p, origin=(0, 0), degrees=0):
-        """
-        Rotates p around origin counterclockwise by degrees°
-        :param p:
-        :param origin:
-        :param degrees:
-        :return:
-        """
-        angle = np.deg2rad(degrees)
-        R = np.array([[np.cos(angle), -np.sin(angle)],
-                      [np.sin(angle), np.cos(angle)]])
-        o = np.atleast_2d(origin)
-        p = np.atleast_2d(p)
-        return np.squeeze((R @ (p.T - o.T) + o.T).T)
-
-    def boundary_radial_function(self, y):
-
-        x = np.copy(y)
-
-        if not isinstance(x, np.ndarray):
-            raise Exception("The query point must be a numpy array")
-
-        # Radial coordinates
-        r = np.linalg.norm(x, axis=1)
-        t = self.angle_from_point(x)  # /np.pi * 180
-
-        # Technique: rotate so e.g. top-right smoothed corner, apply just one transformation, apply back
-
-        angles = np.inf * np.ones_like(t)
-        angles[np.logical_and(self.limit_angles[0] <= t, t <= self.limit_angles[2])] = 180
-        angles[np.logical_and(self.limit_angles[3] <= t, t <= self.limit_angles[5])] = 90
-        angles[np.logical_and(self.limit_angles[6] <= t, t <= self.limit_angles[8])] = 0
-        angles[np.logical_and(self.limit_angles[9] <= t, t <= self.limit_angles[11])] = -90
-
-        for th in [180, 90, 0, -90]:
-            x[angles == th] = self.rotate(x[angles == th], degrees=th)
-
-        p7 = np.array(self.arc_points[7])[0:2]
-
-        xh = x[angles < np.inf] / r[angles < np.inf][:, None]
-        f_corners = np.dot(xh, p7) + np.sqrt(np.dot(xh, p7) ** 2 - np.linalg.norm(p7) ** 2 + self.smoothing_radius ** 2)
-        f_square = radial_function_to_square(x[angles == np.inf], self.side_length)
-
-        f = np.zeros_like(angles)
-
-        f[angles < np.inf] = f_corners
-        f[angles == np.inf] = f_square
-
-        return f
-
-
 class CircleMesh(AbstractMesh):
     """
     Example usage
 
     from utilities.meshing import CircleMesh
     from dolfin import *
-    from dolfin_adjoint import *
     import matplotlib.pyplot as plt
 
     circle = CircleMesh(resolution=.2)
