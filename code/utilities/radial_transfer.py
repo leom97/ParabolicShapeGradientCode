@@ -1,19 +1,15 @@
 """
-Some custom modules for dolfin-adjoint. They implement, most notably, the star-shaped parametrization for the domains.
+Utilities to create displacement vector fields in the plane
+out of functions defined on the unit sphere.
 """
 
 # %% Imports
 
 from dolfin import *
-from dolfin_adjoint import *
 import numpy as np
-from pyadjoint import Block
-from pyadjoint.overloaded_function import overload_function
 from tqdm import tqdm
 import logging
 
-
-# %% All the rest
 
 def compute_spherical_transfer_matrix(V_vol, V_sph, p=None):
     """
@@ -77,6 +73,7 @@ def compute_spherical_transfer_matrix(V_vol, V_sph, p=None):
 
     return M
 
+
 def radial_function_to_square(x, L=1):
     """
     Computes the radial function describing a square with center 0 and side L
@@ -103,7 +100,7 @@ def radial_function_to_square(x, L=1):
 
 def compute_radial_displacement_matrix(M, VD, f_D=None, p=None, eps=1):
     """
-    :param f_D: radial lambda function describing the external boundary of our pseudo-annulus. It is assumed infinite dimensional for now (todo: relax this)
+    :param f_D: radial lambda function describing the external boundary of our pseudo-annulus.
     :param eps, p: out reference pseudo-annulus has a hole of radius eps centered at p
     :param M:
     :param VD:
@@ -152,50 +149,3 @@ def backend_radial_displacement(g, M2, VD):
     W = Function(VD)
     W.vector()[:] = M2 @ gv
     return W
-
-
-class RadialDisplacementBlock(Block):
-    def __init__(self, g, M2, VD, **kwargs):
-        super(RadialDisplacementBlock, self).__init__()
-        self.kwargs = kwargs
-        self.add_dependency(g)
-
-        self.M2 = M2  # matrix bringing us from g.function_space() to VD
-        self.VD = VD  # the volumetric function space, vector fields version
-        self.VD_dim = VD.dim()  # the volumetric function space, vector fields version
-        self.V_sph_dim = g.function_space().dim()
-
-    def __str__(self):
-        return 'RadialDisplacementBlock'
-
-    def recompute_component(self, inputs, block_variable, idx, prepared):
-        # note, inputs is the list containing all the dependencies we specified above
-        # therefore it will be a list of length 1, containing exactly func (actually, a copy of it)
-        return backend_radial_displacement(inputs[0], self.M2, self.VD)
-
-    def evaluate_adj_component(self, inputs, adj_inputs, block_variable, idx, prepared=None):
-        # Note: everything in automatic differentiation is just a vector. So, this method takes vectors (the adj_inputs) and returns vectors
-
-        # Explanation
-        # A function is e.g. z = f(x,y). If idx==1, here, we must return (d/dy f (x,y))^T * z
-        # In the specific case, z = f(x), so idx == 0 always
-
-        adj_input = adj_inputs[0]  # this is a vector, with which we test the adjoint jacobian
-        adj_action = self.M2.T @ adj_input
-        output = Vector(MPI.comm_world, self.V_sph_dim)
-        output[:] = adj_action
-
-        return output
-
-    def evaluate_tlm_component(self, inputs, tlm_inputs, block_variable, idx, prepared=None):
-        # see http://www.dolfin-adjoint.org/en/latest/documentation/pyadjoint_docs.html
-
-        return self.recompute_component(tlm_inputs, block_variable, idx, prepared)
-
-    def evaluate_hessian_component(self, inputs, hessian_inputs, adj_inputs, block_variable, idx,
-                                   relevant_dependencies, prepared=None):
-        return self.evaluate_adj_component(inputs, hessian_inputs, block_variable, idx, prepared)
-
-
-# transfer_from_sphere = overload_function(backend_transfer_from_sphere, TranferFromSphereBlock)
-radial_displacement = overload_function(backend_radial_displacement, RadialDisplacementBlock)

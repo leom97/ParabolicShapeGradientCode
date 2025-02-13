@@ -5,11 +5,9 @@ Everything we need in order to solve the heat equation numerically.
 # %% Imports
 
 from dolfin import *
-from dolfin_adjoint import *
 import numpy as np
 import logging
 from tqdm import tqdm
-import pickle
 from utilities.meshing import AnnulusMesh
 
 
@@ -45,6 +43,7 @@ class HeatEquation:
         self.pre_assembled_BCs = None  # a vector of functions, not a time dependent expression
         if self.efficient:
             pass
+
     def set_mesh(self, mesh, mf, V=None, order=1):
 
         self.mesh = mesh
@@ -60,6 +59,7 @@ class HeatEquation:
         self.ode_scheme = ode_scheme
         if ode_scheme == "implicit_euler":
             pass
+
     def set_time_discretization(self, final_time, N_steps=None, custom_times_array=None, relevant_mesh_size=None):
         '''
         Note, one of N_steps and custom_time_array must be provided
@@ -427,7 +427,7 @@ class HeatEquation:
         else:
             raise Exception("Error norm not implemented")
 
-    def solve(self, err_mode="none"):
+    def solve(self, err_mode="none", log_message="Solving the heat equation"):
         solution_list = []
         error_list = []
         last_solution = Function(self.S1h)  # container for the last solution
@@ -437,7 +437,7 @@ class HeatEquation:
         error_list.append(first_error)
         last_solution.assign(first_solution)  # no need to create a copy of first solution
 
-        logging.info("Solving the heat equation")
+        logging.info(log_message)
         if self.efficient:
             self.pre_assemblage()
         for time_step in tqdm(range(1, len(self.times))):
@@ -522,63 +522,3 @@ class TimeExpressionFromList(UserExpression):
         for (up, uu) in zip(self.solution_list, self.solution_list_original):
             up.vector()[:] = uu.vector().copy()
 
-
-class PreAssembledBC():
-    """
-    Given an expression depending on time, we return a list of functions, the interpolations at a time vector of the
-    expression
-    Noise can be applied
-    """
-
-    def __init__(self, expression, time_instants, V, noise_level=0):
-        if not hasattr(expression, 't'):
-            raise Exception("This expression doesn't depend on time")
-        self.expression = expression  # must have t as attribute
-        self.times = time_instants
-        self.noise_level = noise_level
-
-        self.V = V  # the function space in which to interpolate
-
-        self.interpolated_BC = []
-        self.pre_assemble()  # actually, interpolate
-
-    def pre_assemble(self):
-
-        if isinstance(self.expression, TimeExpressionFromList):
-
-            # Collect nodal vectors in an array
-            fine_nodal_values = np.array([u.vector()[:] for u in self.expression.solution_list_original])
-            from scipy.interpolate.interpolate import interp1d
-            interp = interp1d(self.expression.discrete_times, fine_nodal_values, axis=0)
-
-            new_vals = interp(self.times)
-
-            for i in tqdm(range(new_vals.shape[0])):
-                u = Function(self.expression.V)
-                u.vector()[:] = new_vals[i]
-                bc = Function(self.V)
-                bc.assign(interpolate(u, self.V))
-                bc.vector()[:] += self.noise_level * (np.random.rand(len(bc.vector())) * .5 - 1)
-                self.interpolated_BC.append(bc)
-        else:
-            for t in tqdm(self.times):
-                self.expression.t = t
-                bc = Function(self.V)
-                bc.assign(interpolate(self.expression, self.V))
-                bc.vector()[:] += self.noise_level * (np.random.rand(len(bc.vector())) * .5 - 1)
-                self.interpolated_BC.append(bc)
-
-    def perturb(self, noise_level):
-        sh = self.interpolated_BC[0].vector()[:].shape
-        self.interpolated_BC_original = []
-
-        linf_norm = 0
-        for u in self.interpolated_BC:
-            m = np.abs(u.vector()[:]).max()
-            if m > linf_norm:
-                linf_norm = np.abs(u.vector()[:]).max()
-        for (u, t) in zip(self.interpolated_BC, self.times):
-            u_ori = Function(u.function_space())
-            u_ori.assign(u)
-            self.interpolated_BC_original.append(u_ori)
-            u.vector()[:] += (np.random.rand(*sh) - .5) * noise_level * linf_norm
