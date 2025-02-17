@@ -15,7 +15,7 @@ with the one commented below it.
 experiment_dict = {
     "N_it": 6,  # number of refinements for the spatial mesh
     "dt_multiplier": 15,  # used to couple dt and h: dt = dt_multiplier * h^(1 or 2), 2 is for implicit Euler
-    "h_multiplier": 0.8    # multiplies h_tentative = 2^{-i}, i = 0, ..., N_it The good value is 0.9, TODO
+    "h_multiplier": 0.9    # multiplies h_tentative = 2^{-i}, i = 0, ..., N_it
 }
 
 # This dictionary describes the domain on which the shape gradient is computed (domain),
@@ -23,12 +23,12 @@ experiment_dict = {
 # Comment the "annulus" domain and replace it with the "square_annulus"
 # to reproduce the 3rd row of Table 1.
 geometry_dict = {
-    # "domain": {"type": "annulus", "resolution": None, "ext_refinement": 1.0, "int_refinement": 1.0, "inner_radius": 1,
-    #            "outer_radius": 2,
-    #            "center": np.array([0, 0]), "reload_xdmf": False},
-    "domain": {"type": "square_annulus", "resolution": None, "ext_refinement": 1.0, "int_refinement": 1.0, "inner_radius": 2,
-               "outer_radius": 2, "side_length": 1/2,
+    "domain": {"type": "annulus", "resolution": None, "ext_refinement": 1.0, "int_refinement": 1.0, "inner_radius": 1,
+               "outer_radius": 2,
                "center": np.array([0, 0]), "reload_xdmf": False},
+    # "domain": {"type": "square_annulus", "resolution": None, "ext_refinement": 1.0, "int_refinement": 1.0, "inner_radius": 2,
+    #            "outer_radius": 2, "side_length": 1/2,
+    #            "center": np.array([0, 0]), "reload_xdmf": False},
     "sphere": {"dimension": 2, "resolution": 0.5},
     "q_ex_lambda": 'lambda x: 0'
 }
@@ -50,7 +50,7 @@ pde_dict = {
 # Describes the function \eta inside of the cost function.
 # To obtain the 2nd row of Table 1, set "final_smoothing_lambda" to "lambda t: 0*t + 1".
 cost_functional_dict = {
-    "final_smoothing_lambda": "lambda t: exp(-0.005/pow(t,2)) if t > DOLFIN_EPS else 0.0", # TODO: NB, document this, don't have a place where stuff is 0 if I want eta = 1!
+    "final_smoothing_lambda": "lambda t: exp(-0.005/pow(t,2)) if t > DOLFIN_EPS else 0.0",
     "discretization": None,
     "H1_smoothing": 0
 }

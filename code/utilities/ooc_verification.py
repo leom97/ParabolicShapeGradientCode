@@ -1,5 +1,5 @@
 """
-Helper file for code/applications/shape_gradients_ooc/shape_gradients_ooc_verification.py   # TODO: redo the tree structure
+Helper file for code/applications/shape_gradients_ooc/shape_gradients_ooc_verification.py
 """
 
 # %% Imports
