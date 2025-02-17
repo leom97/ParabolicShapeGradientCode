@@ -9,7 +9,8 @@ Perform the following steps to set up the environment:
 - create a virtual environment: `conda create --name article_env python==3.9`, and take note of the installation location
 - activate the newly created environment: `conda activate article_env`
 - run `source install_packages.sh` to install the required packages. This will require some interaction with the command line, and some time
-- run `source apply_patches.sh` to suitably patch the already installed packages (*): this requires the knowledge of the location of the conda environment, run `python -m site` from within the virtual environment to obtain this path
+- run `python -m site` from within the virtual environment to obtain the path to the python executable
+- run `source apply_patches.sh` to suitably patch the already installed packages (*): this requires the knowledge of the location of the conda environment executable obtained at the previous point
 
 (*) This will apply the commit https://bitbucket.org/fenics-project/ffc/pull-requests/98 to the file tools.py.
 
