@@ -38,6 +38,7 @@ runs_path = "./"  # path to the directory containing this .py file, try to chang
 mesh_path = "../../../mesh_data"
 from pathlib import Path
 Path(mesh_path).mkdir(parents=True, exist_ok=True)
+Path("./results").mkdir(parents=True, exist_ok=True)
 
 # %% Set-ups
 
