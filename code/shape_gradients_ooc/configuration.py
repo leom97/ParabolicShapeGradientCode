@@ -14,8 +14,8 @@ with the one commented below it.
 
 experiment_dict = {
     "N_it": 6,  # number of refinements for the spatial mesh
-    "dt_multiplier": 15,  # used to couple dt and h: dt = dt_multiplier * h^(1 or 2), 2 is for implicit Euler
-    "h_multiplier": 0.9    # multiplies h_tentative = 2^{-i}, i = 0, ..., N_it
+    "N_steps_multiplier": 15,  # used to couple dt and h: dt = 1/N_steps_multiplier * h^(1 or 2), 2 is for implicit Euler
+    "h_multiplier": 0.9    # multiplies h_tentative = 2^{-i}, i = 0, ..., N_it - 1
 }
 
 # This dictionary describes the domain on which the shape gradient is computed (domain),

@@ -70,7 +70,7 @@ if pde_dict["ode_scheme"] == "crank_nicolson":
 else:
     dt_power = 2
 
-dt_multiplier = experiment_dict["dt_multiplier"]
+N_steps_multiplier = experiment_dict["N_steps_multiplier"]
 
 h_actual = np.array([])
 dt_actual = np.array([])
@@ -101,7 +101,7 @@ for h, k in zip(h_tentative, range(len(h_tentative))):
     V_def = VectorFunctionSpace(problem.exact_domain.mesh, "CG", 1)  # vector (2D), linear FEM on the volume
     Q = VectorFunctionSpace(problem.exact_domain.mesh, 'DG', 0)  # space for gradients of V_def functions
 
-    pde_dict["N_steps"] = int(np.ceil(dt_multiplier * pde_dict["T"] / (h_actual[-1] ** (dt_power))))
+    pde_dict["N_steps"] = int(np.ceil(N_steps_multiplier * pde_dict["T"] / (h_actual[-1] ** (dt_power))))
     dt_actual = np.append(dt_actual, pde_dict["T"] / pde_dict["N_steps"])
 
     dj = get_assembled_shape_gradient(V_sph, V_def, V_vol, M2, problem.exact_domain, pde_dict,
