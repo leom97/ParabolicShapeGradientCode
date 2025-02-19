@@ -27,7 +27,7 @@ geometry_dict = {
                "outer_radius": 2,
                "center": np.array([0, 0]), "reload_xdmf": False},
     # "domain": {"type": "square_annulus", "resolution": None, "ext_refinement": 1.0, "int_refinement": 1.0, "inner_radius": 2,
-    #            "outer_radius": 2, "side_length": 1/2,
+    #            "outer_radius": 2, "side_length": 1,
     #            "center": np.array([0, 0]), "reload_xdmf": False},
     "sphere": {"dimension": 2, "resolution": 0.5},
     "q_ex_lambda": 'lambda x: 0'
